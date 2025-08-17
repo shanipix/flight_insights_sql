@@ -1,5 +1,9 @@
 name: Flight SQL Pipeline
 
+# Allow the workflow to push results back to the repo
+permissions:
+  contents: write
+
 on:
   schedule:
     - cron: '0 8 * * *'   # Run every day at 08:00 UTC
@@ -17,41 +21,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sqlite3
 
-      - name: Run SQL pipeline
-        run: |
-          set -e
-          mkdir -p results
-          rm -f flights.db
-
-          # Initialize schema
-          sqlite3 flights.db < queries/schema.sql
-
-          # Import CSV (your file with spaces in the name)
-          tail -n +2 "data/Airline Data - airlines_flights_data.csv" > /tmp/flights.csv
-          sqlite3 -cmd ".mode csv" flights.db ".import /tmp/flights.csv flights_raw"
-
-          # Apply cleaning & KPIs
-          sqlite3 flights.db < queries/kpis.sql
-
-          # Export reports
-          sqlite3 -header -csv flights.db "SELECT airline, ROUND(AVG(price),2) AS avg_price, COUNT(*) AS flights_count FROM flights GROUP BY airline ORDER BY avg_price;" > results/avg_price_per_airline.csv
-
-          sqlite3 -header -csv flights.db "SELECT destination_city, ROUND(AVG(price),2) AS avg_price FROM flights GROUP BY destination_city ORDER BY avg_price DESC LIMIT 5;" > results/top_destinations.csv
-
-          sqlite3 -header -csv flights.db "SELECT class, ROUND(AVG(price),2) AS avg_price, COUNT(*) AS flights_count FROM flights GROUP BY class;" > results/avg_price_by_class.csv
-
-      - name: Commit results
-        run: |
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add results/*.csv
-            git commit -m "Auto-update results"
-            git push
-          else
-            echo "No changes to commit"
-          fi
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -61,19 +30,48 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pandas matplotlib
-          
+
+      - name: Run SQL pipeline
+        run: |
+          set -e
+          mkdir -p results
+          rm -f flights.db
+
+          # Initialize schema
+          sqlite3 flights.db < queries/schema.sql
+
+          # Import CSV (file name with spaces -> keep quotes)
+          # If your CSV uses ';' as separator, replace the next two lines with a sed conversion.
+          tail -n +2 "data/Airline Data - airlines_flights_data.csv" > /tmp/flights.csv
+          sqlite3 -cmd ".mode csv" flights.db ".import /tmp/flights.csv flights_raw"
+
+          # Transformations / KPIs
+          sqlite3 flights.db < queries/kpis.sql
+
+          # Export reports (CSV)
+          sqlite3 -header -csv flights.db "SELECT airline, ROUND(AVG(price),2) AS avg_price, COUNT(*) AS flights_count FROM flights GROUP BY airline ORDER BY avg_price;" > results/avg_price_per_airline.csv
+
+          sqlite3 -header -csv flights.db "SELECT destination_city, ROUND(AVG(price),2) AS avg_price FROM flights GROUP BY destination_city ORDER BY avg_price DESC LIMIT 5;" > results/top_destinations.csv
+
+          sqlite3 -header -csv flights.db "SELECT class, ROUND(AVG(price),2) AS avg_price, COUNT(*) AS flights_count FROM flights GROUP BY class;" > results/avg_price_by_class.csv
+
       - name: Generate charts
         run: |
           python plot.py
 
       - name: Commit results
         run: |
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add results/*
+          # Stage only results (CSV/PNG). Do not fail if nothing new.
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add changes under results/ (ignore errors if none)
+          git add -A results || true
+
+          # Commit only if something is staged
+          if git diff --cached --quiet; then
+            echo "No changes in results to commit."
+          else
             git commit -m "Auto-update results (CSV + charts)"
             git push
-          else
-            echo "No changes to commit"
           fi
