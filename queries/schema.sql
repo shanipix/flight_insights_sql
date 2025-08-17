@@ -1,7 +1,7 @@
 DROP TABLE IF EXISTS flights_raw;
 
 CREATE TABLE IF NOT EXISTS flights_raw (
-  index INTEGER,
+  row_id INTEGER,
   airline TEXT,
   flight TEXT,
   source_city TEXT,
